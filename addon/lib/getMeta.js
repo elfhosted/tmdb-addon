@@ -87,11 +87,17 @@ const fetchCollectionData = async (collTMDBId, language, tmdbId) => {
 
 // Movie specific functions
 const fetchMovieData = async (tmdbId, language) => {
-  return await moviedb.movieInfo({
-    id: tmdbId,
-    language,
-    append_to_response: "videos,credits,external_ids"
-  });
+  try {
+    return await moviedb.movieInfo({
+      id: tmdbId,
+      language,
+      append_to_response: "videos,credits,external_ids"
+    });
+  } catch (e) {
+    // Swallow 404s (not found) and return null; rethrow other errors
+    if (e?.response?.status === 404) return null;
+    throw e;
+  }
 };
 
 const buildMovieResponse = async (res, type, language, tmdbId, rpdbkey, config = {}) => {
@@ -175,11 +181,16 @@ const buildMovieResponse = async (res, type, language, tmdbId, rpdbkey, config =
 
 // TV show specific functions
 const fetchTvData = async (tmdbId, language) => {
-  return await moviedb.tvInfo({
-    id: tmdbId,
-    language,
-    append_to_response: "videos,credits,external_ids"
-  });
+  try {
+    return await moviedb.tvInfo({
+      id: tmdbId,
+      language,
+      append_to_response: "videos,credits,external_ids"
+    });
+  } catch (e) {
+    if (e?.response?.status === 404) return null;
+    throw e;
+  }
 };
 
 const buildTvResponse = async (res, type, language, tmdbId, rpdbkey, config = {}) => {
@@ -234,7 +245,7 @@ const buildTvResponse = async (res, type, language, tmdbId, rpdbkey, config = {}
     year: Utils.parseYear(res.status, res.first_air_date, res.last_air_date),
     background: `https://image.tmdb.org/t/p/original${res.backdrop_path}`,
     slug: Utils.parseSlug(type, res.name, res.external_ids.imdb_id),
-    id: returnImdbId ? res.imdb_id : `tmdb:${tmdbId}`,
+    id: returnImdbId ? res.external_ids?.imdb_id : `tmdb:${tmdbId}`,
     genres: addAgeRatingToGenres(resolvedAgeRating, parsedGenres, showAgeRatingInGenres),
     ageRating: resolvedAgeRating,
     releaseInfo: Utils.parseYear(res.status, res.first_air_date, res.last_air_date),
@@ -302,26 +313,29 @@ async function getMeta(type, language, tmdbId, rpdbkey, config = {}) {
   }
 
   try {
-    const meta = await (type === "movie" ?
-      fetchMovieData(tmdbId, language).then(res => buildMovieResponse(res, type, language, tmdbId, rpdbkey, {
-        ...config,
-        enableAgeRating,
-        showAgeRatingInGenres,
-        showAgeRatingWithImdbRating
-      })) :
-      fetchTvData(tmdbId, language).then(res => buildTvResponse(res, type, language, tmdbId, rpdbkey, {
-        ...config,
-        enableAgeRating,
-        showAgeRatingInGenres,
-        showAgeRatingWithImdbRating
-      }))
-    );
+    // First, fetch raw TMDB data with 404 handling
+    const tmdbRes = (type === "movie")
+      ? await fetchMovieData(tmdbId, language)
+      : await fetchTvData(tmdbId, language);
 
+    if (!tmdbRes) {
+      console.warn(`TMDB ${type} not found: ${tmdbId} (${language})`);
+      // Return empty meta on 404 instead of throwing
+      return { meta: {} };
+    }
+
+    // Build the meta object
+    const meta = (type === "movie")
+      ? await buildMovieResponse(tmdbRes, type, language, tmdbId, rpdbkey, config)
+      : await buildTvResponse(tmdbRes, type, language, tmdbId, rpdbkey, config);
+
+    // Cache and return
     cache.set(cacheKey, { data: meta, timestamp: Date.now() });
-    return Promise.resolve({ meta });
+    return { meta };
   } catch (error) {
-    console.error(`Error in getMeta: ${error.message}`);
-    throw error;
+    // Log and return empty meta instead of throwing to avoid crashing the process
+    console.error(`Error in getMeta: ${error?.message || error}`);
+    return { meta: {} };
   }
 }
 
